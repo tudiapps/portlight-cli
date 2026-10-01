@@ -1,0 +1,174 @@
+# goreleaser v2 — builds and publishes the `portlight` desktop CLI.
+#
+#   goreleaser check                                    # validate this file
+#   goreleaser release --snapshot --clean --skip=sign   # local dry run
+#
+# Releases run on GitHub Actions in tudiapps/portlight-cli, the public mirror
+# of this directory (.github/workflows/release.yml), when a vX.Y.Z tag is
+# pushed there. The monorepo never carries CLI tags: its v* tags are app
+# releases and any tag push starts the Play job in Jenkins. Mirror and tag
+# with tools/publish-cli.sh.
+#
+# Signing is Sigstore cosign, keyless, which needs the CI's OIDC identity —
+# hence --skip=sign locally. Package manager manifests go to
+# tudiapps/homebrew-tap, tudiapps/scoop-bucket and, as a pull request from
+# tudiapps/winget-pkgs, to microsoft/winget-pkgs; all three are written with
+# TAP_GITHUB_TOKEN (GITHUB_TOKEN cannot push to other repositories).
+version: 2
+
+project_name: portlight
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+    - go test ./...
+
+builds:
+  - id: portlight
+    main: ./cmd/portlight
+    binary: portlight
+    env:
+      # Pure Go on every target (mDNS, age, PuTTY and the QR need no cgo),
+      # so one machine cross-builds all six.
+      - CGO_ENABLED=0
+    goos: [windows, linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: portlight
+    formats: [tar.gz]
+    format_overrides:
+      # winget and Scoop both want a zip on Windows.
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+# Keyless cosign signature over the checksum list; verifying it vouches for
+# every archive.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^Sync from monorepo"
+
+release:
+  github:
+    owner: tudiapps
+    name: portlight-cli
+  footer: |
+    ## Install
+
+    ```sh
+    brew install tudiapps/tap/portlight                       # macOS, Linux
+    scoop bucket add tudiapps https://github.com/tudiapps/scoop-bucket
+    scoop install tudiapps/portlight                          # Windows
+    winget install Tudiapps.Portlight                         # Windows
+    curl -fsSL https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.sh | sh
+    ```
+
+    Verify an archive by hand: check it against `checksums.txt`, and that
+    file's signature with
+    `cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig --certificate-identity-regexp '^https://github.com/tudiapps/portlight-cli/' --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt`.
+
+homebrew_casks:
+  - name: portlight
+    ids: [portlight]
+    binaries: [portlight]
+    homepage: https://github.com/tudiapps/portlight-cli
+    description: Desktop companion for the Portlight app — pair SSH hosts and keys with your phone
+    license: MIT
+    repository:
+      owner: tudiapps
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    commit_author:
+      name: tudiapps-bot
+      email: bot@tudiapps.com
+    commit_msg_template: "portlight {{ .Tag }}"
+    # The binary is not notarized; without this, Gatekeeper refuses to run
+    # a quarantined download.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/portlight"]
+          end
+
+scoops:
+  - name: portlight
+    ids: [portlight]
+    homepage: https://github.com/tudiapps/portlight-cli
+    description: Desktop companion for the Portlight app — pair SSH hosts and keys with your phone
+    license: MIT
+    repository:
+      owner: tudiapps
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: bucket
+    commit_author:
+      name: tudiapps-bot
+      email: bot@tudiapps.com
+    commit_msg_template: "portlight {{ .Tag }}"
+
+winget:
+  - name: Portlight
+    ids: [portlight]
+    publisher: Tudiapps
+    publisher_url: https://tudiapps.com
+    package_identifier: Tudiapps.Portlight
+    short_description: Pair your SSH hosts and keys with the Portlight phone app
+    description: |
+      Desktop companion for the Portlight mobile app. One command hands your
+      SSH hosts, keys and known hosts to your phone over your local network,
+      end-to-end encrypted, after you compare a 6-digit code on both screens.
+    homepage: https://github.com/tudiapps/portlight-cli
+    license: MIT
+    license_url: https://github.com/tudiapps/portlight-cli/blob/main/LICENSE
+    privacy_url: https://tudiapps.com/legal/privacy/
+    tags: [ssh, sftp, terminal, mobile, pairing]
+    release_notes_url: "https://github.com/tudiapps/portlight-cli/releases/tag/{{ .Tag }}"
+    repository:
+      owner: tudiapps
+      name: winget-pkgs
+      branch: "portlight-{{ .Version }}"
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        draft: false
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+    commit_author:
+      name: tudiapps-bot
+      email: bot@tudiapps.com

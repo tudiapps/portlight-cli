@@ -1,0 +1,33 @@
+# A vX.Y.Z tag publishes: archives and a cosign-signed checksum list on the
+# GitHub release, then the Homebrew cask, the Scoop manifest and a winget
+# pull request. Tags come from tools/publish-cli.sh in the monorepo.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # the release and its assets
+  id-token: write # keyless cosign signing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: sigstore/cosign-installer@v3
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained token with contents (and pull requests) write on
+          # homebrew-tap, scoop-bucket and winget-pkgs.
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}

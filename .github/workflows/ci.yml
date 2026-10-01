@@ -47,3 +47,4 @@ jobs:
           args: release --snapshot --clean --skip=sign
         env:
           TAP_GITHUB_TOKEN: unused-in-snapshot
+          WINGET_GITHUB_TOKEN: unused-in-snapshot

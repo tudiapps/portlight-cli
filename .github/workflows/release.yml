@@ -28,6 +28,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Fine-grained token with contents (and pull requests) write on
-          # homebrew-tap, scoop-bucket and winget-pkgs.
+          # Fine-grained token with contents write on homebrew-tap and
+          # scoop-bucket.
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          # Classic token, public_repo only: pushes to tudiapps/winget-pkgs
+          # and opens the pull request on microsoft/winget-pkgs.
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}

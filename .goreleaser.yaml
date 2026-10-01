@@ -12,8 +12,9 @@
 # Signing is Sigstore cosign, keyless, which needs the CI's OIDC identity —
 # hence --skip=sign locally. Package manager manifests go to
 # tudiapps/homebrew-tap, tudiapps/scoop-bucket and, as a pull request from
-# tudiapps/winget-pkgs, to microsoft/winget-pkgs; all three are written with
-# TAP_GITHUB_TOKEN (GITHUB_TOKEN cannot push to other repositories).
+# tudiapps/winget-pkgs, to microsoft/winget-pkgs. GITHUB_TOKEN cannot push
+# to other repositories: the tap and the bucket use TAP_GITHUB_TOKEN, winget
+# WINGET_GITHUB_TOKEN (see the winget section).
 version: 2
 
 project_name: portlight
@@ -161,7 +162,10 @@ winget:
       owner: tudiapps
       name: winget-pkgs
       branch: "portlight-{{ .Version }}"
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+      # A fine-grained token cannot open a pull request on a repository its
+      # owner does not own (microsoft/winget-pkgs answers 403), so winget
+      # uses a classic token with only the public_repo scope.
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
       pull_request:
         enabled: true
         draft: false

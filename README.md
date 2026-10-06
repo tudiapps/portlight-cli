@@ -10,12 +10,61 @@ portlight export    # print what pairing would send (private keys hidden)
 portlight enroll <public-key>   # authorize a phone-generated key
 ```
 
+## Quick start
+
+You need the [Portlight app](https://play.google.com/store/apps/details?id=com.tudiapps.portlight)
+on your phone, and the phone and computer on the same network.
+
+**Windows** — open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex
+```
+
+**macOS** — open Terminal and run:
+
+```sh
+brew install tudiapps/tap/portlight
+```
+
+No Homebrew? Use the script instead (also for Linux):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.sh | sh
+```
+
+Then, on the computer:
+
+```sh
+portlight pair
+```
+
+A QR code appears. In the app: **Settings → Pairing → Open camera and scan**,
+scan it, check that the 6-digit code is the same on both screens, and confirm
+on the computer. Your hosts and keys arrive on the phone.
+
+If Windows asks whether `portlight` may use the network, allow it.
+
+### Türkçe
+
+Telefonda [Portlight](https://play.google.com/store/apps/details?id=com.tudiapps.portlight)
+yüklü olsun, telefon ve bilgisayar aynı ağda olsun.
+
+1. **Windows:** PowerShell'i aç, yukarıdaki `irm … | iex` satırını çalıştır.
+   **macOS:** Terminal'i aç, `brew install tudiapps/tap/portlight` (Homebrew
+   yoksa `curl … | sh` satırı).
+2. Bilgisayarda `portlight pair` çalıştır; ekranda QR kod çıkar.
+3. Uygulamada **Ayarlar → Eşleştirme → Kamerayı aç ve okut**, QR'ı okut, iki
+   ekrandaki 6 haneli kodun aynı olduğunu kontrol et, bilgisayarda onayla.
+
+Windows ağ izni sorarsa izin ver.
+
 ## Install
 
 | | |
 |---|---|
 | macOS, Linux (Homebrew) | `brew install tudiapps/tap/portlight` |
-| Windows (winget) | `winget install Tudiapps.Portlight` |
+| Windows (winget) | `winget install Tudiapps.Portlight` — in Microsoft's review, not available yet |
 | Windows (Scoop) | `scoop bucket add tudiapps https://github.com/tudiapps/scoop-bucket` then `scoop install tudiapps/portlight` |
 | macOS, Linux (script) | `curl -fsSL https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.sh \| sh` |
 | Windows (script) | `irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 \| iex` |

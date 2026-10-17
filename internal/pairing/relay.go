@@ -41,6 +41,8 @@ type RelayOptions struct {
 //   - reveal: once the session is claimed (by either path) until revealed
 //   - envelope: once revealed, until the end
 //   - reject: from start to end (no response box)
+//   - enroll, close: once the envelope went out with enroll offered
+//   - enroll/result: once an enroll request was accepted
 //
 // It returns once the session has ended and the phone has seen the outcome
 // (at most ReportGrace later), when ctx is cancelled, or when the relay
@@ -60,12 +62,16 @@ func (s *Server) ServeRelay(ctx context.Context, c *relay.Client, opts RelayOpti
 	defer cancel()
 	l := &relayLoop{s: s, c: c, opts: opts, ctx: ctx, cancel: cancel}
 
-	l.wg.Add(5)
+	l.wg.Add(8)
 	go l.watch()
 	go l.poll(nil, s.revealed, "claim", http.MethodPost, "claim/response")
 	go l.poll(s.claimed, s.revealed, "reveal", http.MethodPost, "reveal/response")
 	go l.poll(s.revealed, nil, "envelope", http.MethodGet, "envelope/response")
 	go l.poll(nil, nil, "reject", http.MethodPost, "")
+	// Enroll extension; delivered never closes when enroll is not offered.
+	go l.poll(s.delivered, s.enrollRequested, "enroll", http.MethodPost, "enroll/response")
+	go l.poll(s.enrollRequested, nil, "enroll/result", http.MethodGet, "enroll/result/response")
+	go l.poll(s.delivered, nil, "close", http.MethodPost, "")
 	l.wg.Wait()
 
 	l.mu.Lock()

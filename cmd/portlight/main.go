@@ -88,11 +88,30 @@ func run(args []string) error {
 		configFlag := pairCmd.String("config", "", "path to custom ssh config file")
 		relayFlag := pairCmd.String("relay", os.Getenv(pairing.RelayEnv),
 			"mailbox relay base URL (https://), used only if the phone cannot reach this machine; default $"+pairing.RelayEnv)
+		enrollFlag := pairCmd.Bool("enroll", false,
+			"phone key mode: send no private keys; the phone makes its own key and this machine adds it to the servers you approve (default from $"+pairing.EnrollEnv+"=only)")
+		noEnrollFlag := pairCmd.Bool("no-enroll", false,
+			"end the session at the envelope (protocol v1), without offering to add the phone's own key ($"+pairing.EnrollEnv+"=off)")
 		if err := pairCmd.Parse(args[1:]); err != nil {
 			return err
 		}
+		if *enrollFlag && *noEnrollFlag {
+			return fmt.Errorf("--enroll and --no-enroll cannot be used together")
+		}
+		mode := pairing.EnrollModeFromEnv()
+		switch {
+		case *enrollFlag:
+			mode = pairing.EnrollOnly
+		case *noEnrollFlag:
+			mode = pairing.EnrollOff
+		}
 
-		return pairing.RunInteractive(*configFlag, *portFlag, *relayFlag, os.Stdin, os.Stdout)
+		return pairing.RunInteractive(pairing.PairOptions{
+			ConfigPath: *configFlag,
+			Port:       *portFlag,
+			RelayURL:   *relayFlag,
+			Enroll:     mode,
+		}, os.Stdin, os.Stdout)
 
 	case "export":
 		exportCmd := flag.NewFlagSet("export", flag.ContinueOnError)
@@ -148,11 +167,18 @@ func usage() {
 
 Usage:
   portlight pair [--port 4455] [--config ~/.ssh/config] [--relay https://…]
+                 [--enroll | --no-enroll]
       Send hosts, keys and known_hosts to your phone via encrypted QR code.
       The phone and this machine must be on the same Wi-Fi network.
       --relay (or $PORTLIGHT_RELAY) adds a mailbox relay as a last resort
       when the phone cannot reach this machine; it only carries sealed,
       MAC'd messages and cannot read them.
+      Afterwards the phone may make a key of its own (hardware-backed where
+      the phone has it) and send its public half here; you approve the
+      server list on this screen, and this machine adds it to those
+      servers' authorized_keys using its own SSH access.
+      --enroll (or $PORTLIGHT_ENROLL=only): send no private keys at all;
+      the phone gets its own key instead. --no-enroll: end at the envelope.
   portlight export [--json] [--config ~/.ssh/config]
       Print what pairing would send (auditable, sends nothing)
   portlight enroll [<public-key>] [--key "<public-key>"]

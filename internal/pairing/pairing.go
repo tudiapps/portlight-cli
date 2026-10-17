@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +19,8 @@ import (
 	"github.com/skip2/go-qrcode"
 	"github.com/tudiapps/portlight-cli/internal/agents"
 	"github.com/tudiapps/portlight-cli/internal/discovery"
+	"github.com/tudiapps/portlight-cli/internal/enroll"
+	"github.com/tudiapps/portlight-cli/internal/envelope"
 	"github.com/tudiapps/portlight-cli/internal/i18n"
 	"github.com/tudiapps/portlight-cli/internal/putty"
 	"github.com/tudiapps/portlight-cli/internal/relay"
@@ -38,6 +40,8 @@ type Payload struct {
 	Keys       []sshconfig.Key        `json:"keys"`
 	KnownHosts []string               `json:"known_hosts"`
 	Agents     []agents.Agent         `json:"agents"`
+	// Enroll offers the enroll extension; absent in protocol v1.
+	Enroll *EnrollOfferPayload `json:"enroll,omitempty"`
 }
 
 // Redacted returns p without private key material, for previews.
@@ -97,16 +101,32 @@ func BuildPayload(configPath string, opts sshconfig.LoadOptions) (Payload, []str
 // --relay is not given.
 const RelayEnv = "PORTLIGHT_RELAY"
 
+// PairOptions configure RunInteractive.
+type PairOptions struct {
+	// ConfigPath is the ssh config to read; empty means ~/.ssh/config.
+	ConfigPath string
+	// Port is the LAN port to try first.
+	Port int
+	// RelayURL, if not empty, is a mailbox relay (https://, or http:// on
+	// loopback) served alongside the LAN server as the last fallback.
+	RelayURL string
+	// Enroll chooses whether, and how, the phone may add a key of its own.
+	Enroll EnrollMode
+}
+
 // RunInteractive pairs with a phone over the local network: it shows the
 // QR, waits for the phone, asks the user to compare codes and only then
 // sends the sealed payload. Nothing is written to disk.
 //
-// relayURL, if not empty, is a mailbox relay (https://, or http:// on
-// loopback) served alongside the LAN server as the last fallback.
-func RunInteractive(configPath string, port int, relayURL string, in io.Reader, out io.Writer) error {
+// Unless opts.Enroll is EnrollOff, the session then waits (EnrollTTL) for
+// the phone to send a public key of its own; after the desktop user
+// approves the host list, the key is added to those servers' authorized_keys
+// with this machine's SSH access. Nothing is written locally then either.
+func RunInteractive(opts PairOptions, in io.Reader, out io.Writer) error {
+	configPath, port := opts.ConfigPath, opts.Port
 	var relayClient *relay.Client
-	if relayURL != "" {
-		c, err := relay.New(relayURL)
+	if opts.RelayURL != "" {
+		c, err := relay.New(opts.RelayURL)
 		if err != nil {
 			return err
 		}
@@ -126,6 +146,36 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 	if err != nil {
 		return err
 	}
+
+	var serverOpts Options
+	writeTimeout := DecisionTTL + 10*time.Second
+	if opts.Enroll != EnrollOff {
+		ek, err := envelope.Random(envelope.EnrollKeySize)
+		if err != nil {
+			return err
+		}
+		// The distributor logs in with the keys read above; they stay here.
+		desktop := &desktopEnroll{in: in, stdin: stdin, out: out}
+		desktop.dist = &enroll.Distributor{
+			Hosts:      slices.Clone(payload.Hosts),
+			Keys:       payload.Keys,
+			Passphrase: desktop.passphrase,
+			Progress:   desktop.progress,
+		}
+		serverOpts.Enroll = &EnrollHandler{Key: ek, Handle: desktop.handle}
+		payload.Enroll = &EnrollOfferPayload{Key: b64.EncodeToString(ek), Only: opts.Enroll == EnrollOnly}
+		if opts.Enroll == EnrollOnly {
+			// No private key leaves this machine; the phone makes its own.
+			payload.Keys = []sshconfig.Key{}
+			hosts := slices.Clone(payload.Hosts)
+			for i := range hosts {
+				hosts[i].Key = ""
+			}
+			payload.Hosts = hosts
+		}
+		// The enroll result long-polls through the decision and the work.
+		writeTimeout = EnrollDecisionTTL + EnrollWorkTTL + 30*time.Second
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encoding payload: %w", err)
@@ -141,7 +191,7 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 		return answer == "e" || answer == "evet" || answer == "y" || answer == "yes"
 	}
 
-	server, err := NewServer(body, confirm, Options{})
+	server, err := NewServer(body, confirm, serverOpts)
 	if err != nil {
 		return err
 	}
@@ -175,7 +225,7 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 		Handler:           server,
 		ReadHeaderTimeout: 5 * time.Second,
 		// The envelope call long-polls through the user's decision.
-		WriteTimeout: DecisionTTL + 10*time.Second,
+		WriteTimeout: writeTimeout,
 	}
 	go func() { _ = httpServer.Serve(listener) }()
 	// Keep serving until the phone has seen the outcome, then shut down.
@@ -220,6 +270,11 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 	fmt.Fprintf(out, i18n.S("Hosts: %d · Keys: %d · known_hosts: %d\n", "Host: %d · Anahtar: %d · known_hosts: %d\n"),
 		len(payload.Hosts), len(payload.Keys), len(payload.KnownHosts))
 	printWarnings(out, warnings)
+	if opts.Enroll == EnrollOnly {
+		fmt.Fprintln(out, i18n.S(
+			"Phone key mode: no private key is sent. The phone makes its own key and,\nonce you approve the list here, this computer adds it to those servers.",
+			"Telefon anahtarı modu: hiçbir özel anahtar gönderilmez. Telefon kendi anahtarını\nüretir; listeyi burada onaylarsanız bu bilgisayar onu o sunuculara ekler."))
+	}
 	fmt.Fprintln(out, "--------------------------------------------------------")
 	fmt.Fprintln(out, i18n.S(
 		"Your phone and this computer must be on the same Wi-Fi network.",
@@ -253,8 +308,25 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 		"Bekleniyor (%d sn)... Kod eşleşmeden hiçbir şey gönderilmez.\n"),
 		int(HandshakeTTL.Seconds()))
 
+	if serverOpts.Enroll != nil {
+		go func() {
+			select {
+			case <-server.Delivered():
+				fmt.Fprintf(out, i18n.S(
+					"\n✓ Encrypted envelope delivered to the phone.\nIf the phone adds a key of its own to your servers, you will be asked here first.\nWaiting up to %d min (Ctrl+C to finish)...\n",
+					"\n✓ Şifreli zarf telefona teslim edildi.\nTelefon sunucularınıza kendi anahtarını eklemek isterse önce burada sorulacak.\nEn çok %d dk bekleniyor (bitirmek için Ctrl+C)...\n"),
+					int(EnrollTTL.Minutes()))
+			case <-server.finished:
+			}
+		}()
+	}
+
 	if err := server.Wait(); err != nil {
 		return err
+	}
+	if outcome, results := server.Enrollment(); outcome != EnrollNotOffered {
+		printEnrollOutcome(out, outcome, results)
+		return nil
 	}
 	fmt.Fprintln(out, i18n.S(
 		"\n✓ Encrypted envelope delivered to the phone. Session closed.",
@@ -347,29 +419,16 @@ func printWarnings(w io.Writer, warnings []string) {
 
 // ErrKeyOptions is returned for an authorized_keys line that carries
 // options such as command="..." — enroll only adds plain keys.
-var ErrKeyOptions = errors.New("key has authorized_keys options; only a plain public key can be enrolled")
+var ErrKeyOptions = enroll.ErrKeyOptions
 
 // EnrollKey adds a phone-generated public key to authorized_keys in sshDir
 // (default ~/.ssh). The input must be exactly one plain public key: no
 // options, no second line. It is re-encoded before writing, so nothing
 // but the key and a fixed comment reaches the file.
 func EnrollKey(publicKey, sshDir string, out io.Writer) error {
-	publicKey = strings.TrimSpace(publicKey)
-	if publicKey == "" {
-		return fmt.Errorf("public key is empty")
-	}
-	if strings.ContainsAny(publicKey, "\r\n") {
-		return fmt.Errorf("expected a single public key line")
-	}
-	pub, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(publicKey))
+	pub, err := enroll.ParsePublicKey(publicKey)
 	if err != nil {
-		return fmt.Errorf("not a valid public key: %w", err)
-	}
-	if len(options) > 0 {
-		return ErrKeyOptions
-	}
-	if len(strings.TrimSpace(string(rest))) > 0 {
-		return fmt.Errorf("expected a single public key line")
+		return err
 	}
 
 	if sshDir == "" {

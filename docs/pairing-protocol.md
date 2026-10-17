@@ -1,7 +1,9 @@
 # Eşleştirme protokolü — v1 (yerel ağ)
 
 **Durum:** CLI tarafı uygulandı (`cli/internal/pairing`, `cli/internal/envelope`,
-25 Eylül 2026). Telefon tarafı (`packages/pairing_client`) Faz 2b.
+25 Eylül 2026). Telefon tarafı (`packages/pairing_client`) Faz 2b. Enroll
+uzantısı (17 Ekim 2026): `cli/internal/enroll`, `pairing_client`'ta
+`PairingEnrollment`.
 **Kapsam:** aynı ağdaki doğrudan HTTP yolu ve onu bulmak için mDNS. Relay'e
 düşme bu sözleşmenin üstüne gelir, mesajları değiştirmez.
 
@@ -89,7 +91,8 @@ box(name) = b64url( HMAC-SHA256(k, fields("portlight/pair/v1/relay", sid, name))
 ```
 
 `name` ASCII: `claim`, `claim/response`, `reveal`, `reveal/response`,
-`envelope`, `envelope/response`, `reject`. `k` olmadan kutular adreslenemez;
+`envelope`, `envelope/response`, `reject` (enroll uzantısı: `enroll`,
+`enroll/response`, `enroll/result`, `enroll/result/response`, `close`). `k` olmadan kutular adreslenemez;
 relay kutuları birbirine ya da bir oturuma bağlayamaz.
 
 ### Mesajlar
@@ -250,6 +253,172 @@ Telefon                                           CLI
 - `proxy_jump` OpenSSH yazımıyla gelir (`user@host:port`, virgüllü zincir
   olabilir); uygulama şimdilik tek atlamayı destekliyor.
 - `portlight export`, `private_key` alanı olmadan aynı JSON'u basar.
+- `enroll` (isteğe bağlı): aşağıdaki "Enroll uzantısı". Yoksa masaüstü
+  enroll sunmuyor (eski CLI ya da `--no-enroll`).
+
+## Enroll uzantısı (v1 üstüne, 17 Ekim 2026)
+
+Telefon kendi anahtarını üretir (StrongBox / Secure Enclave, P-256,
+dışa aktarılamaz; donanım yoksa yazılımda, yine telefondan çıkmaz) ve
+masaüstüne **yalnız açık anahtarını** gönderir; masaüstü kendi mevcut SSH
+erişimiyle onu seçilen sunucuların `~/.ssh/authorized_keys` dosyasına ekler
+ve sunucu başına sonucu bildirir. QR (`v=1`), el sıkışma, SAS ve zarf
+değişmez; uzantı zarftan **sonra** aynı oturumda iki istek daha ekler.
+
+### Uyumluluk
+
+| Telefon | CLI | Sonuç |
+|---|---|---|
+| eski | yeni | Payload'daki `enroll` alanı bilinmeyen alan olarak yok sayılır. CLI zarftan sonra enroll süresince (5 dk) bekler; Ctrl+C ile ya da süre dolunca biter. `--no-enroll` v1'in birebir aynısıdır |
+| yeni | eski | Payload'da `enroll` yok → telefon "telefon anahtarı ekle" seçeneğini göstermez, "CLI'ı güncelleyin" der |
+| yeni | yeni | Aşağıdaki akış |
+
+Payload `version` 1 kalır: alan eklemeli ve isteğe bağlıdır.
+
+### Payload alanı
+
+```json
+"enroll": {"key": "<b64 32 bayt>", "only": false}
+```
+
+- `key` = `ek`: CLI'ın bu oturum için ürettiği 32 rastgele bayt. **Yalnız
+  mühürlü zarfın içinde** gider, yani yalnız SAS'ı onaylanmış `recipient`'in
+  sahibi (telefon) bilir. QR sırrı `k` sızmış olsa bile enroll isteği
+  `ek` olmadan üretilemez: saldırgan kendi anahtarını sunuculara ekletemez.
+- `only: true` — `portlight pair --enroll` (ya da `PORTLIGHT_ENROLL=1`):
+  "anahtar kopyalama, telefona yeni anahtar ver" modu. Zarfta **hiç özel
+  anahtar yoktur** (`keys: []`, `hosts[].key` boş); telefon doğrudan
+  telefon anahtarı adımını açar.
+
+### Türetilen değerler
+
+```
+K_req     = HKDF-SHA256(ikm = ek, salt = sid, info = "portlight/pair/v1/enroll/request", 32 bayt)
+K_res     = HKDF-SHA256(ikm = ek, salt = sid, info = "portlight/pair/v1/enroll/result",  32 bayt)
+CloseMAC  = HMAC-SHA256(ek, fields("portlight/pair/v1/enroll/close", sid))
+seal(K, label, m) = {"nonce": b64(n), "box": b64(ChaCha20-Poly1305(K, n, m, aad = fields(label, sid)))}
+                    n = 12 rastgele bayt
+```
+
+`label` istekte `portlight/pair/v1/enroll/request`, sonuçta
+`portlight/pair/v1/enroll/result`. Her yönde tek mesaj ve ayrı anahtar
+olduğu için nonce tekrarı yok; aad oturumu bağlar.
+
+### Akış
+
+```
+Telefon                                              CLI
+  │ … v1: claim, reveal, SAS, GET envelope (payload.enroll.key = ek) …
+  │ kullanıcı host'ları seçer, telefonda anahtar üretilir
+  │ POST /v1/pair/{sid}/enroll ────────────────────────►  açar (K_req), doğrular
+  │   seal(K_req, {public_key, hosts})                    masaüstünde listeyi gösterir, "e/H?"
+  │ ◄──────────────────────────────────────────── 202
+  │ GET /v1/pair/{sid}/enroll/result ──────────────────►  onaylanırsa host'lara bağlanır,
+  │                                                       authorized_keys'e ekler
+  │ ◄──────────────── 200 seal(K_res, {results}) / 403 (masaüstünde reddedildi)
+  │ başarılı host'ları yeni anahtara bağlar, ilkini dener
+  │
+  │ (vazgeçerse) POST /v1/pair/{sid}/close {"mac": CloseMAC} ──► 204, oturum biter
+```
+
+İstek gövdesi (açık hali):
+
+```json
+{"public_key": "ecdsa-sha2-nistp256 AAAA… portlight-phone",
+ "hosts": [{"alias": "prod-1", "host_name": "10.0.0.1", "user": "ubuntu", "port": 22}]}
+```
+
+Sonuç (açık hali), istekteki sırayla:
+
+```json
+{"results": [
+  {"alias": "prod-1", "status": "added",   "host_key": "ssh-ed25519 AAAA…"},
+  {"alias": "web",    "status": "present", "host_key": "ecdsa-sha2-nistp256 AAAA…"},
+  {"alias": "db",     "status": "failed",  "reason": "unknown_host_key"}
+]}
+```
+
+| `status` | Anlam |
+|---|---|
+| `added` | Anahtar eklendi |
+| `present` | Anahtar zaten vardı; dosyaya dokunulmadı |
+| `failed` | Eklenmedi; `reason` neden |
+
+| `reason` | Anlam |
+|---|---|
+| `not_known` | Masaüstü bu host'u tanımıyor (ne SSH config'te ne `known_hosts`'ta) — bağlanılmadı |
+| `unknown_host_key` | Sunucunun anahtarı masaüstünün `known_hosts`'unda yok — **kabul edilmez** |
+| `host_key_changed` | Sunucunun anahtarı `known_hosts`'takinden farklı |
+| `auth_failed` | Masaüstünün anahtarları / agent'ı bu sunucuda geçmedi |
+| `unreachable` | TCP/SSH bağlantısı kurulamadı |
+| `proxy_jump` | ProxyJump zinciri (desteklenmiyor) ya da atlama host'u kullanılamadı |
+| `write_failed` | `authorized_keys` okunamadı/yazılamadı (POSIX olmayan kabuk dahil) |
+| `timeout` | Sunucu süresinde bitmedi |
+
+`host_key`: CLI'ın bağlanırken gördüğü ve kendi `known_hosts`'uyla
+doğruladığı sunucu anahtarı (`authorized_keys` biçiminde, yorum yok).
+Telefon bunu yalnız o host:port için **hiç güvendiği anahtar yoksa**
+kaydeder; farklı bir anahtara zaten güveniyorsa üzerine yazmaz (değişen
+anahtar uyarısı aynen çalışır).
+
+### Kurallar
+
+- **Yalnız açık anahtar** gider. Telefonun özel anahtarı üretildiği yerden
+  (StrongBox / Secure Enclave / platform kasası) hiç çıkmaz.
+- `public_key`: tek satır, seçeneksiz (`EnrollKey` ile aynı doğrulama), CLI
+  satırı yeniden kodlar; sunucuya yalnız `<tür> <base64> portlight-mobile`
+  yazılır. 1–64 host, istek gövdesi en çok 32 KiB, bilinmeyen alan reddedilir.
+- **CLI yalnız zaten tanıdığı yere bağlanır:** istekteki host ya SSH
+  config/PuTTY'deki bir alias'tır (`host_name` ve `port` uymalı; bağlanırken
+  config'in `HostName`/`Port`/`IdentityFile`/`ProxyJump`'ı kullanılır) ya da
+  `host_name:port` masaüstünün `known_hosts`'unda vardır (hash'li satırlar
+  dahil). Değilse `not_known`, hiç bağlanılmaz. `user` istekten gelir ve
+  onay listesinde görünür.
+- **Masaüstü onayı:** CLI host listesini (`user@host:port`) ve anahtarın
+  parmak izini gösterip "e/H" sorar; onaydan önce hiçbir sunucuya
+  bağlanılmaz. Karar süresi 60 sn; süre ya da "hayır" → `403`.
+- **Bağlantı:** `golang.org/x/crypto/ssh`; kimlik doğrulama ssh-agent
+  (`SSH_AUTH_SOCK`, Windows'ta OpenSSH agent pipe'ı), host'un
+  `IdentityFile`'ı ve varsayılan anahtarlar (`id_ed25519`, `id_ecdsa`,
+  `id_rsa`, PuTTY `.ppk` dönüşümü dahil). Passphrase'li anahtar için onaydan
+  sonra bir kez sorulur (boş = atla). Sunucu anahtarı `~/.ssh/known_hosts`
+  ile doğrulanır; **bilinmeyen anahtar asla otomatik kabul edilmez.**
+  ProxyJump tek atlama desteklenir (atlama host'u da aynı kurallarla).
+- **Uzak komutlar** (anahtar satırı komut satırına girmez, stdin'den gider):
+  okuma `sh -c 'test ! -e .ssh/authorized_keys || cat .ssh/authorized_keys'`;
+  anahtar yoksa ekleme `sh -c 'umask 077 && mkdir -p .ssh && cat >> .ssh/authorized_keys'`.
+  Anahtar blob'u karşılaştırılır (seçenekli satırdaki aynı anahtar da
+  "var" sayılır). Dosya satır sonuyla bitmiyorsa önce `\n` yazılır.
+- **CLI yerelde hiçbir şey yazmaz.** Masaüstündeki tek iz ekrandaki çıktıdır.
+- Süreler: zarf teslim edildikten sonra enroll isteği için **5 dk**; istek
+  gelince masaüstü kararı 60 sn; dağıtım en çok 180 sn (host başına 15 sn
+  bağlantı + 15 sn komut, aynı anda 4 host). Telefon `enroll/result`'u en çok
+  60 + 180 + 10 sn bekler.
+- Oturum yine tek kullanımlık: kabul edilen ikinci `enroll` → `409`;
+  sonuç teslim edilince, `close` gelince, `reject` gelince ya da süre
+  dolunca oturum biter.
+
+### Durum kodları (uzantı)
+
+| İstek | Kod | Anlam |
+|---|---|---|
+| `enroll` | 202 | Kabul; masaüstü soruyor |
+| `enroll` | 400 | Açıldı ama içerik geçersiz (anahtar, host sayısı) — oturum sürer |
+| `enroll` | 401 | `K_req` ile açılmadı (`ek` bilinmiyor) — oturum etkilenmez |
+| `enroll` | 404 / 409 / 410 | Oturum yok / zaten istendi ya da enroll sunulmadı / bitti |
+| `enroll/result` | 200 | Sonuç |
+| `enroll/result` | 403 | Masaüstünde reddedildi ya da karar süresi doldu |
+| `enroll/result` | 409 / 410 | İstek yok / oturum bitti |
+| `close` | 204 / 401 / 409 / 410 | Kapandı / MAC tutmadı / dağıtım sürüyor / zaten bitti |
+
+### Relay
+
+Yeni kutu adları: `enroll`, `enroll/response`, `enroll/result`,
+`enroll/result/response`, `close` (yanıt kutusu yok, `reject` gibi). CLI
+`enroll`'ü ve `close`'u zarf teslim edildikten sonra, `enroll/result`'u
+istek kabul edildikten sonra dinler. Relay'in gördüğü yine yalnız kutu
+kimlikleri, boyutlar ve zamanlama: istek ve sonuç `ek`'ten türetilen
+anahtarlarla mühürlü, `ek` zarfın içinde.
 
 ## Açık
 

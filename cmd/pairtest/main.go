@@ -12,6 +12,11 @@
 // -advertise replaces the host in the QR's address, e.g. 10.0.2.2 so an
 // Android emulator reaches a server listening on the host's loopback.
 //
+// -enroll offers the enroll extension with a stand-in for the desktop:
+// it approves every request, writes the request it got (public key and
+// hosts) to enroll_file, and answers "added" for every host except one
+// aliased "fail-me" (unknown_host_key). -enroll-decline answers 403.
+//
 // -relay also serves the session through a mailbox relay (see
 // ./cmd/devrelay) and adds r=URL to the QR. To force the relay path,
 // combine it with an unreachable -advertise such as 192.0.2.1.
@@ -21,6 +26,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -29,6 +35,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/tudiapps/portlight-cli/internal/enroll"
+	"github.com/tudiapps/portlight-cli/internal/envelope"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/tudiapps/portlight-cli/internal/pairing"
 	"github.com/tudiapps/portlight-cli/internal/relay"
@@ -58,14 +68,19 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "address to listen on")
 	advertise := flag.String("advertise", "", "host to put in the QR instead of the listen host")
 	relayURL := flag.String("relay", "", "mailbox relay base URL to serve through as well")
+	offerEnroll := flag.Bool("enroll", false, "offer the enroll extension (stand-in desktop approves)")
+	declineEnroll := flag.Bool("enroll-decline", false, "offer enroll, but decline the request")
 	flag.Parse()
-	if err := run(*reject, *listen, *advertise, *relayURL); err != nil {
+	if err := run(*reject, *listen, *advertise, *relayURL, *offerEnroll || *declineEnroll, *declineEnroll); err != nil {
 		fmt.Fprintln(os.Stderr, "pairtest:", err)
 		os.Exit(1)
 	}
 }
 
-func run(reject bool, listen, advertise, relayURL string) error {
+// fixtureHostKey is what the stand-in desktop reports having verified.
+const fixtureHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
+
+func run(reject bool, listen, advertise, relayURL string, offerEnroll, declineEnroll bool) error {
 	var relayClient *relay.Client
 	if relayURL != "" {
 		c, err := relay.New(relayURL)
@@ -74,7 +89,32 @@ func run(reject bool, listen, advertise, relayURL string) error {
 		}
 		relayClient = c
 	}
-	body, err := json.Marshal(fixedPayload)
+	payload := fixedPayload
+	enrollFile := filepath.Join(os.TempDir(), "portlight-pairtest-"+strconv.Itoa(os.Getpid())+".enroll")
+	var opts pairing.Options
+	if offerEnroll {
+		ek, err := envelope.Random(envelope.EnrollKeySize)
+		if err != nil {
+			return err
+		}
+		payload.Enroll = &pairing.EnrollOfferPayload{Key: base64.RawURLEncoding.EncodeToString(ek)}
+		opts.Enroll = &pairing.EnrollHandler{Key: ek, Handle: func(_ context.Context, req enroll.Request, _ ssh.PublicKey) ([]enroll.Result, bool) {
+			got, _ := json.Marshal(req)
+			_ = os.WriteFile(enrollFile, got, 0o600)
+			if declineEnroll {
+				return nil, false
+			}
+			results := make([]enroll.Result, len(req.Hosts))
+			for i, h := range req.Hosts {
+				results[i] = enroll.Result{Alias: h.Alias, Status: enroll.StatusAdded, HostKey: fixtureHostKey}
+				if h.Alias == "fail-me" {
+					results[i] = enroll.Result{Alias: h.Alias, Status: enroll.StatusFailed, Reason: enroll.ReasonUnknownHostKey}
+				}
+			}
+			return results, true
+		}}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -83,7 +123,7 @@ func run(reject bool, listen, advertise, relayURL string) error {
 		_ = os.WriteFile(sasFile, []byte(sas), 0o600)
 		return !reject
 	}
-	server, err := pairing.NewServer(body, confirm, pairing.Options{})
+	server, err := pairing.NewServer(body, confirm, opts)
 	if err != nil {
 		return err
 	}
@@ -109,12 +149,18 @@ func run(reject bool, listen, advertise, relayURL string) error {
 		relayDone <- nil
 	}
 	line, _ := json.Marshal(map[string]string{
-		"uri":      server.QRURI(endpoints),
-		"sas_file": sasFile,
+		"uri":         server.QRURI(endpoints),
+		"sas_file":    sasFile,
+		"enroll_file": enrollFile,
 	})
 	fmt.Println(string(line))
 
 	err = server.Wait()
+	if err == nil && offerEnroll {
+		if outcome, _ := server.Enrollment(); outcome != pairing.EnrollCompleted && outcome != pairing.EnrollDeclined {
+			err = fmt.Errorf("enroll ended with outcome %d", outcome)
+		}
+	}
 	// The relay loop returns once the phone has seen the outcome.
 	if relayErr := <-relayDone; relayErr != nil {
 		fmt.Fprintln(os.Stderr, "pairtest: relay:", relayErr)

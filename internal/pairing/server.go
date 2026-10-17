@@ -15,7 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tudiapps/portlight-cli/internal/enroll"
 	"github.com/tudiapps/portlight-cli/internal/envelope"
+	"golang.org/x/crypto/ssh"
 )
 
 // Protocol limits. See docs/pairing-protocol.md.
@@ -28,6 +30,19 @@ const (
 	DecisionTTL = 60 * time.Second
 
 	maxBody = 4 << 10
+
+	// EnrollTTL is how long after the envelope the phone has to send its
+	// public key (enroll extension).
+	EnrollTTL = 5 * time.Minute
+	// EnrollDecisionTTL is how long the desktop user has to approve the
+	// host list.
+	EnrollDecisionTTL = 60 * time.Second
+	// EnrollWorkTTL bounds adding the key to every host.
+	EnrollWorkTTL = 180 * time.Second
+	// enrollGrace is slack on top of the two for sealing the result.
+	enrollGrace = 10 * time.Second
+
+	maxEnrollBody = 32 << 10
 )
 
 // Errors Wait can return.
@@ -47,9 +62,41 @@ const (
 	stateClaimed                // phone's recipient and commitment accepted
 	stateRevealed               // nonces exchanged, SAS on both screens
 	stateConfirmed              // user said the codes match
-	stateDone                   // envelope delivered
+	stateDelivered              // envelope delivered, waiting for an enroll request
+	stateEnrolling              // enroll request accepted, desktop deciding / adding
+	stateEnrolled               // enroll result ready for the phone
+	stateDone                   // finished: envelope (and enroll, if any) delivered
 	stateFailed                 // rejected, expired or aborted
 )
+
+// EnrollOutcome says how the enroll phase of a session ended.
+type EnrollOutcome int
+
+// Enroll outcomes.
+const (
+	// EnrollNotOffered: the session had no enroll phase.
+	EnrollNotOffered EnrollOutcome = iota
+	// EnrollSkipped: the phone closed the session without a key.
+	EnrollSkipped
+	// EnrollExpired: the phone sent nothing in time, or never fetched the
+	// result (the hosts were already changed in that case).
+	EnrollExpired
+	// EnrollDeclined: the desktop user said no, or did not decide in time.
+	EnrollDeclined
+	// EnrollCompleted: the per-host results reached the phone.
+	EnrollCompleted
+)
+
+// EnrollHandler is the desktop side of the enroll extension.
+type EnrollHandler struct {
+	// Key is ek, the enroll key; the caller also puts it in the payload.
+	Key []byte
+	// Handle is called at most once, on its own goroutine, with a
+	// validated request. It asks the desktop user (within
+	// EnrollDecisionTTL) and, if they approve, adds the key to the hosts
+	// before ctx ends. approved=false answers the phone with 403.
+	Handle func(ctx context.Context, req enroll.Request, pub ssh.PublicKey) (results []enroll.Result, approved bool)
+}
 
 var b64 = base64.RawURLEncoding
 
@@ -79,12 +126,24 @@ type Server struct {
 	finished   chan struct{} // closed on stateDone or stateFailed
 	reported   chan struct{} // closed once the phone has seen the outcome
 	reportOnce sync.Once
+
+	enroll          *EnrollHandler
+	delivered       chan struct{} // closed when the envelope went out with enroll offered
+	enrollRequested chan struct{} // closed when an enroll request is accepted
+	enrollDecided   chan struct{} // closed when the result (or a no) is ready
+	enrollApproved  bool
+	enrollSealed    []byte
+	enrollResults   []enroll.Result
+	enrollOutcome   EnrollOutcome
 }
 
 // Options tune a Server; the zero value is the production setting.
 type Options struct {
 	// Now replaces time.Now, for tests.
 	Now func() time.Time
+	// Enroll, if set, keeps the session open after the envelope so the
+	// phone can send a public key to add to the desktop's servers.
+	Enroll *EnrollHandler
 }
 
 // NewServer starts a session that will deliver payload once confirm
@@ -115,11 +174,22 @@ func NewServer(payload []byte, confirm func(sas string) bool, opts Options) (*Se
 		finished:  make(chan struct{}),
 		reported:  make(chan struct{}),
 		mux:       http.NewServeMux(),
+
+		enroll:          opts.Enroll,
+		delivered:       make(chan struct{}),
+		enrollRequested: make(chan struct{}),
+		enrollDecided:   make(chan struct{}),
+	}
+	if s.enroll != nil && len(s.enroll.Key) != envelope.EnrollKeySize {
+		return nil, fmt.Errorf("enroll key must be %d bytes", envelope.EnrollKeySize)
 	}
 	s.mux.HandleFunc("POST /v1/pair/{sid}/claim", s.handleClaim)
 	s.mux.HandleFunc("POST /v1/pair/{sid}/reveal", s.handleReveal)
 	s.mux.HandleFunc("GET /v1/pair/{sid}/envelope", s.handleEnvelope)
 	s.mux.HandleFunc("POST /v1/pair/{sid}/reject", s.handleReject)
+	s.mux.HandleFunc("POST /v1/pair/{sid}/enroll", s.handleEnroll)
+	s.mux.HandleFunc("GET /v1/pair/{sid}/enroll/result", s.handleEnrollResult)
+	s.mux.HandleFunc("POST /v1/pair/{sid}/close", s.handleClose)
 	return s, nil
 }
 
@@ -186,7 +256,8 @@ func (s *Server) Close(httpServer *http.Server) {
 	}
 }
 
-// Wait blocks until the envelope is delivered (nil) or the session fails.
+// Wait blocks until the envelope is delivered and any enroll phase is over
+// (nil; see Enrollment), or the session fails.
 func (s *Server) Wait() error {
 	for {
 		s.mu.Lock()
@@ -360,8 +431,17 @@ func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireLocked()
-	if s.state == stateFailed || s.state == stateDone {
+	switch {
+	case s.state == stateFailed || s.state == stateDone:
 		http.Error(w, "session is over", http.StatusGone)
+		return
+	case s.state == stateDelivered:
+		// The envelope is out; the phone is leaving without a key.
+		s.finishLocked(EnrollSkipped)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case s.state > stateDelivered:
+		http.Error(w, "adding the key is under way", http.StatusConflict)
 		return
 	}
 	s.failLocked(ErrRejectedOnPhone)
@@ -390,6 +470,10 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireLocked()
+	if s.state > stateConfirmed && s.state < stateDone {
+		http.Error(w, "envelope already delivered", http.StatusGone)
+		return
+	}
 	if s.state != stateConfirmed {
 		s.phaseLocked(w, stateConfirmed)
 		return
@@ -398,8 +482,14 @@ func (s *Server) handleEnvelope(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(s.sealed)
 	s.markReported()
-	// Single use: once handed over, the session is closed.
+	// Single use: once handed over, the envelope is gone.
 	s.sealed, s.payload = nil, nil
+	if s.enroll != nil {
+		s.state = stateDelivered
+		s.deadline = s.now().Add(EnrollTTL)
+		close(s.delivered)
+		return
+	}
 	s.state = stateDone
 	close(s.finished)
 }
@@ -427,9 +517,26 @@ func (s *Server) phaseLocked(w http.ResponseWriter, want state) bool {
 }
 
 func (s *Server) expireLocked() {
-	if s.state != stateFailed && s.state != stateDone && !s.now().Before(s.deadline) {
-		s.failLocked(ErrExpired)
+	if s.state == stateFailed || s.state == stateDone || s.now().Before(s.deadline) {
+		return
 	}
+	if s.state >= stateDelivered {
+		// The envelope is already on the phone: running out of time on
+		// the optional enroll phase is not a failed pairing.
+		s.finishLocked(EnrollExpired)
+		return
+	}
+	s.failLocked(ErrExpired)
+}
+
+// finishLocked ends a session whose envelope was delivered.
+func (s *Server) finishLocked(outcome EnrollOutcome) {
+	if s.state == stateFailed || s.state == stateDone {
+		return
+	}
+	s.state, s.enrollOutcome = stateDone, outcome
+	s.payload, s.sealed, s.enrollSealed = nil, nil, nil
+	close(s.finished)
 }
 
 func (s *Server) failLocked(err error) {
@@ -442,7 +549,11 @@ func (s *Server) failLocked(err error) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	return decodeMax(w, r, v, maxBody)
+}
+
+func decodeMax(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		http.Error(w, "malformed JSON", http.StatusBadRequest)

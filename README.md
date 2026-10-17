@@ -6,9 +6,17 @@ end-to-end encrypted, after you compare a 6-digit code on both screens.
 
 ```sh
 portlight pair      # show a QR code, pair with the phone
+portlight pair --enroll   # send no private keys: the phone gets its own key
 portlight export    # print what pairing would send (private keys hidden)
-portlight enroll <public-key>   # authorize a phone-generated key
+portlight enroll <public-key>   # authorize a phone-generated key by hand
 ```
+
+After pairing, the app can make a key of its own (in the phone's security
+chip when it has one) and send only its public half back. This computer
+lists the servers, asks you, and adds the key to their `authorized_keys`
+with its own SSH access: your agent and keys, and only servers whose host
+key is already in your `known_hosts`. Nothing is written on this computer.
+`--no-enroll` ends the session at the envelope instead.
 
 ## Quick start
 

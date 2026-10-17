@@ -91,6 +91,8 @@ func RejectMAC(secret, sessionID []byte) []byte {
 var RelayBoxNames = []string{
 	"claim", "claim/response", "reveal", "reveal/response",
 	"envelope", "envelope/response", "reject",
+	// Enroll extension.
+	"enroll", "enroll/response", "enroll/result", "enroll/result/response", "close",
 }
 
 // RelayBox is the relay mailbox id for one message of a session: 32 bytes

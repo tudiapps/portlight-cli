@@ -1,5 +1,11 @@
 # Installs the portlight CLI from its GitHub release (Windows).
 #
+# From Command Prompt (cmd) or PowerShell:
+#
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex"
+#
+# From PowerShell only:
+#
 #   irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex
 #
 # Options, as environment variables:
@@ -9,21 +15,36 @@
 #
 # The archive is checked against the release's checksums.txt before anything
 # is installed; the install directory is added to the user PATH.
+#
+# Everything runs inside a script block so that `iex` leaves no variables or
+# preferences behind in the caller's session.
+& {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Windows PowerShell 5.1 on older .NET still offers TLS 1.0 first, which
+# GitHub refuses.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $repo = 'tudiapps/portlight-cli'
 
-$arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+# A 32-bit PowerShell on 64-bit Windows reports x86; the real CPU is in
+# PROCESSOR_ARCHITEW6432.
+$cpu = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch ($cpu) {
     'AMD64' { 'amd64' }
     'ARM64' { 'arm64' }
-    default { throw "portlight install: unsupported CPU $env:PROCESSOR_ARCHITECTURE" }
+    default { throw "portlight install: unsupported CPU $cpu" }
 }
 
 $tag = $env:PORTLIGHT_VERSION
 if (-not $tag) {
-    $latest = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'portlight-install' }
-    $tag = $latest.tag_name
+    # releases/latest redirects to releases/tag/vX.Y.Z; following it needs no
+    # API call, so the unauthenticated API rate limit cannot get in the way.
+    $req = [Net.WebRequest]::Create("https://github.com/$repo/releases/latest")
+    $req.Method = 'HEAD'
+    $resp = $req.GetResponse()
+    $tag = ($resp.ResponseUri.AbsolutePath -split '/')[-1]
+    $resp.Close()
 }
 if ($tag -notmatch '^v\d') { throw "portlight install: could not find the latest release (got '$tag')" }
 $version = $tag.Substring(1)
@@ -43,7 +64,10 @@ try {
     $actual = (Get-FileHash (Join-Path $tmp $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($expected -ne $actual) { throw "portlight install: checksum mismatch for $archive" }
 
-    Expand-Archive (Join-Path $tmp $archive) -DestinationPath (Join-Path $tmp 'x') -Force
+    # ZipFile rather than Expand-Archive: the Archive module is missing or
+    # blocked on some locked-down machines.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::ExtractToDirectory((Join-Path $tmp $archive), (Join-Path $tmp 'x'))
 
     $dir = $env:PORTLIGHT_INSTALL_DIR
     if (-not $dir) { $dir = Join-Path $env:LOCALAPPDATA 'Programs\portlight' }
@@ -53,11 +77,20 @@ try {
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if (($userPath -split ';') -notcontains $dir) {
-    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $dir).TrimStart(';'), 'User')
-    $env:Path = "$env:Path;$dir"
-    Write-Host "Added $dir to your user PATH (new terminals pick it up)."
+$exe = Join-Path $dir 'portlight.exe'
+if (-not (Test-Path $exe)) {
+    throw "portlight install: $exe disappeared after copying; your antivirus may have quarantined it"
 }
 
-Write-Host "Installed $(& (Join-Path $dir 'portlight.exe') version) to $dir"
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $userPath) { $userPath = '' }
+if (($userPath -split ';') -notcontains $dir) {
+    [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $dir).TrimStart(';'), 'User')
+    Write-Host "Added $dir to your user PATH."
+}
+if (($env:Path -split ';') -notcontains $dir) { $env:Path = "$env:Path;$dir" }
+
+Write-Host "Installed $(& $exe version) to $exe"
+Write-Host ''
+Write-Host 'Open a NEW terminal window, then run:  portlight pair'
+}

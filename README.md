@@ -15,11 +15,13 @@ portlight enroll <public-key>   # authorize a phone-generated key
 You need the [Portlight app](https://play.google.com/store/apps/details?id=com.tudiapps.portlight)
 on your phone, and the phone and computer on the same network.
 
-**Windows** — open PowerShell and run:
+**Windows** — open Command Prompt (`cmd`) or PowerShell and run:
 
-```powershell
-irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex
+```bat
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex"
 ```
+
+Then close that window and open a new one, so it sees the updated `PATH`.
 
 **macOS** — open Terminal and run:
 
@@ -50,7 +52,13 @@ If Windows asks whether `portlight` may use the network, allow it.
 Telefonda [Portlight](https://play.google.com/store/apps/details?id=com.tudiapps.portlight)
 yüklü olsun, telefon ve bilgisayar aynı ağda olsun.
 
-1. **Windows:** PowerShell'i aç, yukarıdaki `irm … | iex` satırını çalıştır.
+1. **Windows:** Komut İstemi'ni (`cmd`) ya da PowerShell'i aç, şu satırı
+   çalıştır, sonra pencereyi kapatıp yenisini aç:
+
+   ```bat
+   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex"
+   ```
+
    **macOS:** Terminal'i aç, `brew install tudiapps/tap/portlight` (Homebrew
    yoksa `curl … | sh` satırı).
 2. Bilgisayarda `portlight pair` çalıştır; ekranda QR kod çıkar.
@@ -67,7 +75,7 @@ Windows ağ izni sorarsa izin ver.
 | Windows (winget) | `winget install Tudiapps.Portlight` — in Microsoft's review, not available yet |
 | Windows (Scoop) | `scoop bucket add tudiapps https://github.com/tudiapps/scoop-bucket` then `scoop install tudiapps/portlight` |
 | macOS, Linux (script) | `curl -fsSL https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.sh \| sh` |
-| Windows (script) | `irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 \| iex` |
+| Windows (script, cmd or PowerShell) | `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 \| iex"` |
 | Go | `go install github.com/tudiapps/portlight-cli/cmd/portlight@latest` |
 
 Or download an archive from the

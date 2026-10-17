@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/tudiapps/portlight-cli/internal/agent"
+	"github.com/tudiapps/portlight-cli/internal/i18n"
 	"github.com/tudiapps/portlight-cli/internal/pairing"
 )
 
@@ -32,10 +33,10 @@ func main() {
 	isInteractive := len(os.Args) <= 1
 	err := run(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "\nportlight hatası:", err)
+		fmt.Fprintln(os.Stderr, i18n.S("\nportlight error:", "\nportlight hatası:"), err)
 	}
 
-	// Windows'ta çift tıklanarak açıldığında pencerenin anında kapanmasını önle
+	// Opened by double-click on Windows, the window would close at once.
 	if isInteractive {
 		pauseExit()
 	}
@@ -46,20 +47,22 @@ func main() {
 }
 
 func pauseExit() {
-	fmt.Println("\nÇıkmak için Enter tuşuna basın...")
+	fmt.Println(i18n.S("\nPress Enter to exit...", "\nÇıkmak için Enter tuşuna basın..."))
 	_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
 }
 
 func run(args []string) error {
 	if len(args) == 0 {
 		fmt.Println("========================================================")
-		fmt.Println("           PORTLIGHT MASAÜSTÜ YARDIMCISI (CLI)          ")
+		fmt.Println(i18n.S(
+			"               PORTLIGHT DESKTOP COMPANION              ",
+			"           PORTLIGHT MASAÜSTÜ YARDIMCISI (CLI)          "))
 		fmt.Println("========================================================")
-		fmt.Println("1) Telefon ile Eşleştir (QR Kod Başlat) [Varsayılan]")
-		fmt.Println("2) SSH Yapılandırmasını Önizle (Export)")
-		fmt.Println("3) Telefon Açık Anahtarını Yetkilendir (Enroll)")
-		fmt.Println("4) Yardım ve Kullanım Bilgisi")
-		fmt.Print("\nSeçiminiz (1-4) [Enter = 1]: ")
+		fmt.Println(i18n.S("1) Pair with your phone (show QR code) [default]", "1) Telefon ile eşleştir (QR kodu göster) [varsayılan]"))
+		fmt.Println(i18n.S("2) Preview what would be sent (export)", "2) Gönderilecekleri önizle (export)"))
+		fmt.Println(i18n.S("3) Authorize the phone's public key (enroll)", "3) Telefonun açık anahtarını yetkilendir (enroll)"))
+		fmt.Println(i18n.S("4) Help", "4) Yardım"))
+		fmt.Print(i18n.S("\nYour choice (1-4) [Enter = 1]: ", "\nSeçiminiz (1-4) [Enter = 1]: "))
 
 		reader := bufio.NewReader(os.Stdin)
 		line, _ := reader.ReadString('\n')
@@ -114,7 +117,9 @@ func run(args []string) error {
 		}
 
 		if strings.TrimSpace(key) == "" {
-			fmt.Print("Telefondaki genel anahtarı girin (örn: ssh-ed25519 AAA...): ")
+			fmt.Print(i18n.S(
+				"Paste the phone's public key (e.g. ssh-ed25519 AAA...): ",
+				"Telefondaki açık anahtarı yapıştırın (örn. ssh-ed25519 AAA...): "))
 			reader := bufio.NewReader(os.Stdin)
 			line, err := reader.ReadString('\n')
 			if err != nil {
@@ -144,6 +149,7 @@ func usage() {
 Usage:
   portlight pair [--port 4455] [--config ~/.ssh/config] [--relay https://…]
       Send hosts, keys and known_hosts to your phone via encrypted QR code.
+      The phone and this machine must be on the same Wi-Fi network.
       --relay (or $PORTLIGHT_RELAY) adds a mailbox relay as a last resort
       when the phone cannot reach this machine; it only carries sealed,
       MAC'd messages and cannot read them.
@@ -157,6 +163,9 @@ Usage:
       ` + "`portlight agent help`" + `)
   portlight version
       Print the version
+
+Messages are in English, or Turkish when the system language is Turkish;
+set PORTLIGHT_LANG=en or PORTLIGHT_LANG=tr to choose.
 
 Nothing is uploaded to third-party servers unless you pass --relay.
 Pairing talks to the phone directly over the local network; the payload is an age (X25519 +

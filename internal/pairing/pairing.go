@@ -19,6 +19,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"github.com/tudiapps/portlight-cli/internal/agents"
 	"github.com/tudiapps/portlight-cli/internal/discovery"
+	"github.com/tudiapps/portlight-cli/internal/i18n"
 	"github.com/tudiapps/portlight-cli/internal/putty"
 	"github.com/tudiapps/portlight-cli/internal/relay"
 	"github.com/tudiapps/portlight-cli/internal/sshconfig"
@@ -115,10 +116,10 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 	payload, warnings, err := BuildPayload(configPath, sshconfig.LoadOptions{
 		Passphrase: func(path string, attempt int) ([]byte, error) {
 			if attempt > 1 {
-				fmt.Fprintln(out, "Passphrase yanlış.")
+				fmt.Fprintln(out, i18n.S("Wrong passphrase.", "Passphrase yanlış."))
 			}
-			fmt.Fprintf(out, "%s PuTTY anahtarı passphrase korumalı.\n", filepath.Base(path))
-			fmt.Fprint(out, "Passphrase (atlamak için boş bırakın): ")
+			fmt.Fprintf(out, i18n.S("The PuTTY key %s is passphrase protected.\n", "%s PuTTY anahtarı passphrase korumalı.\n"), filepath.Base(path))
+			fmt.Fprint(out, i18n.S("Passphrase (leave empty to skip): ", "Passphrase (atlamak için boş bırakın): "))
 			return readSecret(in, stdin, out)
 		},
 	})
@@ -131,8 +132,10 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 	}
 
 	confirm := func(sas string) bool {
-		fmt.Fprintf(out, "\nTelefonda görünen kod:  %s\n", sas)
-		fmt.Fprint(out, "İki ekrandaki kod aynı mı? Aynıysa \"e\" yazıp Enter'a basın [e/H]: ")
+		fmt.Fprintf(out, i18n.S("\nCode shown on the phone:  %s\n", "\nTelefonda görünen kod:  %s\n"), sas)
+		fmt.Fprint(out, i18n.S(
+			"Is it the same code on both screens? If so, type \"y\" and press Enter [y/N]: ",
+			"İki ekrandaki kod aynı mı? Aynıysa \"e\" yazıp Enter'a basın [e/H]: "))
 		line, _ := stdin.ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
 		return answer == "e" || answer == "evet" || answer == "y" || answer == "yes"
@@ -163,7 +166,7 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 	// multicast is unavailable pairing still works without it.
 	if len(ips) > 0 {
 		if ad, err := discovery.Advertise(server.SessionID(), port, ips); err != nil {
-			warnings = append(warnings, fmt.Sprintf("mDNS ilanı yapılamadı: %v", err))
+			warnings = append(warnings, fmt.Sprintf(i18n.S("mDNS announcement failed: %v", "mDNS ilanı yapılamadı: %v"), err))
 		} else {
 			defer ad.Stop()
 		}
@@ -183,7 +186,7 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 		endpoints.Relay = relayClient.URL()
 		healthCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if err := relayClient.Health(healthCtx); err != nil {
-			warnings = append(warnings, fmt.Sprintf("relay şu an yanıt vermiyor (%v); yeniden denenecek", err))
+			warnings = append(warnings, fmt.Sprintf(i18n.S("relay not responding (%v); will retry", "relay şu an yanıt vermiyor (%v); yeniden denenecek"), err))
 		}
 		cancel()
 		relayCtx, stopRelay := context.WithCancel(context.Background())
@@ -194,7 +197,7 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 				Warn: func(msg string) { fmt.Fprintf(out, "  ! %s\n", msg) },
 			})
 			if err != nil {
-				fmt.Fprintf(out, "  ! relay devre dışı, yerel ağ yolu sürüyor: %v\n", err)
+				fmt.Fprintf(out, i18n.S("  ! relay off, the local network path goes on: %v\n", "  ! relay devre dışı, yerel ağ yolu sürüyor: %v\n"), err)
 			}
 		}()
 		// Runs before server.Close. The relay loop ends by itself once the
@@ -210,35 +213,52 @@ func RunInteractive(configPath string, port int, relayURL string, in io.Reader, 
 	}
 
 	fmt.Fprintln(out, "\n========================================================")
-	fmt.Fprintln(out, "              PORTLIGHT PAIRING (EŞLEŞTİRME)            ")
+	fmt.Fprintln(out, i18n.S(
+		"                    PORTLIGHT PAIRING                   ",
+		"                  PORTLIGHT EŞLEŞTİRME                  "))
 	fmt.Fprintln(out, "========================================================")
-	fmt.Fprintf(out, "Host: %d · Anahtar: %d · known_hosts: %d · Ajan: %d\n",
-		len(payload.Hosts), len(payload.Keys), len(payload.KnownHosts), len(payload.Agents))
+	fmt.Fprintf(out, i18n.S("Hosts: %d · Keys: %d · known_hosts: %d\n", "Host: %d · Anahtar: %d · known_hosts: %d\n"),
+		len(payload.Hosts), len(payload.Keys), len(payload.KnownHosts))
 	printWarnings(out, warnings)
 	fmt.Fprintln(out, "--------------------------------------------------------")
-	fmt.Fprintln(out, "Telefonunuzdaki Portlight uygulamasından QR kodu tarayın:")
+	fmt.Fprintln(out, i18n.S(
+		"Your phone and this computer must be on the same Wi-Fi network.",
+		"Telefon ve bu bilgisayar aynı Wi-Fi ağında olmalı."))
+	fmt.Fprintln(out, i18n.S(
+		"Scan the QR code with the Portlight app on your phone:",
+		"Telefonunuzdaki Portlight uygulamasından QR kodu tarayın:"))
 	fmt.Fprintln(out)
 	qr, err := qrcode.New(server.QRURI(endpoints), qrcode.Medium)
 	if err != nil {
 		return fmt.Errorf("rendering QR: %w", err)
 	}
 	fmt.Fprintln(out, qr.ToSmallString(false))
-	fmt.Fprintf(out, "Adres: %s\n", strings.Join(addrs, ", "))
+	fmt.Fprintf(out, i18n.S("Address: %s\n", "Adres: %s\n"), strings.Join(addrs, ", "))
 	if relayClient != nil {
-		fmt.Fprintf(out, "Relay: %s — yalnız yerel ağ ulaşamazsa kullanılır; relay kutu kimliklerini, "+
-			"boyutları, zamanlamayı ve IP adreslerini görür, QR sırrını, 6 haneli kodu ve "+
-			"zarfın içeriğini göremez.\n", relayClient.Host())
+		fmt.Fprintf(out, i18n.S(
+			"Relay: %s — used only if the local network cannot reach the phone; the relay sees "+
+				"mailbox IDs, sizes, timing and IP addresses, never the QR secret, the 6-digit code "+
+				"or what the envelope holds.\n",
+			"Relay: %s — yalnız yerel ağ ulaşamazsa kullanılır; relay kutu kimliklerini, "+
+				"boyutları, zamanlamayı ve IP adreslerini görür, QR sırrını, 6 haneli kodu ve "+
+				"zarfın içeriğini göremez.\n"), relayClient.Host())
 	}
 	if runtime.GOOS == "windows" {
-		fmt.Fprintln(out, "Windows Güvenlik Duvarı sorarsa \"İzin ver\" deyin; yoksa telefon bağlanamaz.")
+		fmt.Fprintln(out, i18n.S(
+			"If Windows Firewall asks, choose \"Allow\"; otherwise the phone cannot connect.",
+			"Windows Güvenlik Duvarı sorarsa \"İzin ver\" deyin; yoksa telefon bağlanamaz."))
 	}
-	fmt.Fprintf(out, "Bekleniyor (%d sn)... Kod eşleşmeden hiçbir şey gönderilmez.\n",
+	fmt.Fprintf(out, i18n.S(
+		"Waiting (%d s)... Nothing is sent until the codes match.\n",
+		"Bekleniyor (%d sn)... Kod eşleşmeden hiçbir şey gönderilmez.\n"),
 		int(HandshakeTTL.Seconds()))
 
 	if err := server.Wait(); err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "\n✓ Şifreli zarf telefona teslim edildi. Oturum kapandı.")
+	fmt.Fprintln(out, i18n.S(
+		"\n✓ Encrypted envelope delivered to the phone. Session closed.",
+		"\n✓ Şifreli zarf telefona teslim edildi. Oturum kapandı."))
 	return nil
 }
 
@@ -263,42 +283,40 @@ func ExportConfig(configPath string, asJSON bool, out, errOut io.Writer) error {
 		configPath = sshconfig.DefaultConfigPath()
 	}
 	fmt.Fprintln(out, "\n========================================================")
-	fmt.Fprintln(out, "              PORTLIGHT SSH AKTARIM ÖNİZLEMESİ          ")
+	fmt.Fprintln(out, i18n.S(
+		"                 PORTLIGHT EXPORT PREVIEW               ",
+		"              PORTLIGHT SSH AKTARIM ÖNİZLEMESİ          "))
 	fmt.Fprintln(out, "========================================================")
-	fmt.Fprintf(out, "SSH Config Yolu: %s\n", configPath)
+	fmt.Fprintf(out, i18n.S("SSH config: %s\n", "SSH config yolu: %s\n"), configPath)
 	printWarnings(out, warnings)
-	fmt.Fprintf(out, "Toplam %d Host bulundu:\n\n", len(payload.Hosts))
+	fmt.Fprintf(out, i18n.S("%d hosts found:\n\n", "Toplam %d host bulundu:\n\n"), len(payload.Hosts))
 	for i, h := range payload.Hosts {
 		fmt.Fprintf(out, " [%d] %-15s -> %s@%s:%d\n", i+1, h.Alias, h.User, h.HostName, h.Port)
 		if h.Key != "" {
-			fmt.Fprintf(out, "     Anahtar: %s\n", h.Key)
+			fmt.Fprintf(out, i18n.S("     Key: %s\n", "     Anahtar: %s\n"), h.Key)
 		}
 		if h.ProxyJump != "" {
 			fmt.Fprintf(out, "     ProxyJump: %s\n", h.ProxyJump)
 		}
 	}
 
-	fmt.Fprintf(out, "\nGönderilecek özel anahtarlar (%d):\n", len(payload.Keys))
+	fmt.Fprintf(out, i18n.S("\nPrivate keys to send (%d):\n", "\nGönderilecek özel anahtarlar (%d):\n"), len(payload.Keys))
 	for _, k := range payload.Keys {
-		protection := "passphrase yok"
+		protection := i18n.S("no passphrase", "passphrase yok")
 		if k.Encrypted {
-			protection = "passphrase korumalı"
+			protection = i18n.S("passphrase protected", "passphrase korumalı")
 		}
 		if k.FromPPK {
-			protection += ", PuTTY'den OpenSSH'e dönüştürülecek"
+			protection += i18n.S(", converted from PuTTY to OpenSSH", ", PuTTY'den OpenSSH'e dönüştürülecek")
 		}
 		fmt.Fprintf(out, " - %-14s %s, %s\n", k.Name, k.Algorithm, protection)
 	}
 
-	fmt.Fprintf(out, "\nBilinen sunucu (known_hosts) kayıtları: %d\n", len(payload.KnownHosts))
-	fmt.Fprintf(out, "Bulunan ajanlar (%d):", len(payload.Agents))
-	for _, a := range payload.Agents {
-		fmt.Fprintf(out, " %s", a.Kind)
-	}
-	fmt.Fprintln(out, " — yalnız varlıkları bildirilir, token taşınmaz")
+	fmt.Fprintf(out, i18n.S("\nKnown hosts (known_hosts) entries: %d\n", "\nBilinen sunucu (known_hosts) kayıtları: %d\n"), len(payload.KnownHosts))
 	fmt.Fprintln(out, "--------------------------------------------------------")
-	fmt.Fprintln(out, "Özel anahtarlar burada gösterilmez; `portlight pair` onları")
-	fmt.Fprintln(out, "yalnızca iki ekrandaki kod eşleştikten sonra, şifreli gönderir.")
+	fmt.Fprintln(out, i18n.S(
+		"Private keys are not shown here; `portlight pair` sends them\nencrypted, and only once the codes on both screens match.",
+		"Özel anahtarlar burada gösterilmez; `portlight pair` onları\nyalnızca iki ekrandaki kod eşleştikten sonra, şifreli gönderir."))
 	return nil
 }
 
@@ -321,7 +339,7 @@ func printWarnings(w io.Writer, warnings []string) {
 	if len(warnings) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "Atlananlar (%d):\n", len(warnings))
+	fmt.Fprintf(w, i18n.S("Skipped (%d):\n", "Atlananlar (%d):\n"), len(warnings))
 	for _, warning := range warnings {
 		fmt.Fprintf(w, "  ! %s\n", warning)
 	}
@@ -367,7 +385,7 @@ func EnrollKey(publicKey, sshDir string, out io.Writer) error {
 		for _, l := range strings.Split(string(existing), "\n") {
 			if p, _, _, _, err := ssh.ParseAuthorizedKey([]byte(l)); err == nil &&
 				string(p.Marshal()) == string(pub.Marshal()) {
-				fmt.Fprintf(out, "Bu anahtar zaten %s dosyasında.\n", authPath)
+				fmt.Fprintf(out, i18n.S("This key is already in %s.\n", "Bu anahtar zaten %s dosyasında.\n"), authPath)
 				return nil
 			}
 		}
@@ -381,6 +399,6 @@ func EnrollKey(publicKey, sshDir string, out io.Writer) error {
 	if _, err := fmt.Fprintf(f, "\n%s portlight-mobile\n", line); err != nil {
 		return fmt.Errorf("writing key: %w", err)
 	}
-	fmt.Fprintf(out, "✓ Anahtar %s dosyasına eklendi (%s).\n", authPath, ssh.FingerprintSHA256(pub))
+	fmt.Fprintf(out, i18n.S("✓ Key added to %s (%s).\n", "✓ Anahtar %s dosyasına eklendi (%s).\n"), authPath, ssh.FingerprintSHA256(pub))
 	return nil
 }

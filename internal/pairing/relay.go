@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tudiapps/portlight-cli/internal/i18n"
 	"github.com/tudiapps/portlight-cli/internal/relay"
 )
 
@@ -128,7 +129,7 @@ func (l *relayLoop) transient(err error) {
 	l.warnedOnce = true
 	l.mu.Unlock()
 	if first && l.opts.Warn != nil {
-		l.opts.Warn(fmt.Sprintf("relay'e şu an ulaşılamıyor, yeniden deneniyor (%v)", err))
+		l.opts.Warn(fmt.Sprintf(i18n.S("relay unreachable, retrying (%v)", "relay'e şu an ulaşılamıyor, yeniden deneniyor (%v)"), err))
 	}
 }
 

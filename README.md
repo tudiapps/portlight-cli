@@ -13,7 +13,7 @@ portlight enroll <public-key>   # authorize a phone-generated key
 ## Quick start
 
 You need the [Portlight app](https://play.google.com/store/apps/details?id=com.tudiapps.portlight)
-on your phone, and the phone and computer on the same network.
+on your phone, and the phone and computer on the same Wi-Fi network.
 
 **Windows** — open Command Prompt (`cmd`) or PowerShell and run:
 
@@ -47,10 +47,13 @@ on the computer. Your hosts and keys arrive on the phone.
 
 If Windows asks whether `portlight` may use the network, allow it.
 
+Messages are in English, or Turkish when the system language is Turkish;
+set `PORTLIGHT_LANG=en` or `PORTLIGHT_LANG=tr` to choose.
+
 ### Türkçe
 
 Telefonda [Portlight](https://play.google.com/store/apps/details?id=com.tudiapps.portlight)
-yüklü olsun, telefon ve bilgisayar aynı ağda olsun.
+yüklü olsun, telefon ve bilgisayar aynı Wi-Fi ağında olsun.
 
 1. **Windows:** Komut İstemi'ni (`cmd`) ya da PowerShell'i aç, şu satırı
    çalıştır, sonra pencereyi kapatıp yenisini aç:
@@ -66,6 +69,9 @@ yüklü olsun, telefon ve bilgisayar aynı ağda olsun.
    ekrandaki 6 haneli kodun aynı olduğunu kontrol et, bilgisayarda onayla.
 
 Windows ağ izni sorarsa izin ver.
+
+Sistem dili Türkçeyse mesajlar Türkçe çıkar; `PORTLIGHT_LANG=en` ya da
+`PORTLIGHT_LANG=tr` ile seçebilirsin.
 
 ## Install
 

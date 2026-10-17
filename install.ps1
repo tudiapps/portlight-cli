@@ -2,11 +2,12 @@
 #
 # From Command Prompt (cmd) or PowerShell:
 #
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1)))"
 #
-# From PowerShell only:
-#
-#   irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex
+# Not `irm … | iex` on the command line: endpoint protection on managed
+# Windows machines refuses to start a process whose command line is that
+# download-and-run pattern ("Access is denied"). Inside an already open
+# PowerShell, `irm … | iex` still works.
 #
 # Options, as environment variables:
 #   PORTLIGHT_VERSION      a tag such as v0.1.0 (default: the latest release)

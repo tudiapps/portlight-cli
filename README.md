@@ -18,7 +18,7 @@ on your phone, and the phone and computer on the same network.
 **Windows** — open Command Prompt (`cmd`) or PowerShell and run:
 
 ```bat
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1)))"
 ```
 
 Then close that window and open a new one, so it sees the updated `PATH`.
@@ -56,7 +56,7 @@ yüklü olsun, telefon ve bilgisayar aynı ağda olsun.
    çalıştır, sonra pencereyi kapatıp yenisini aç:
 
    ```bat
-   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 | iex"
+   powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1)))"
    ```
 
    **macOS:** Terminal'i aç, `brew install tudiapps/tap/portlight` (Homebrew
@@ -75,7 +75,7 @@ Windows ağ izni sorarsa izin ver.
 | Windows (winget) | `winget install Tudiapps.Portlight` — in Microsoft's review, not available yet |
 | Windows (Scoop) | `scoop bucket add tudiapps https://github.com/tudiapps/scoop-bucket` then `scoop install tudiapps/portlight` |
 | macOS, Linux (script) | `curl -fsSL https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.sh \| sh` |
-| Windows (script, cmd or PowerShell) | `powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1 \| iex"` |
+| Windows (script, cmd or PowerShell) | `powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tudiapps/portlight-cli/main/install.ps1)))"` |
 | Go | `go install github.com/tudiapps/portlight-cli/cmd/portlight@latest` |
 
 Or download an archive from the
